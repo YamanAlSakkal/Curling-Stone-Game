@@ -1,6 +1,10 @@
 #Yaman Al Sakkal
 # Curling-Stone-Game
-WebDev, Node.js, Sockets, HTML, CSS, JS.
+WebDev, Node.js, Socket.IO, HTML, CSS, JS.
+
+A real-time, browser-based multiplayer curling game built with Node.js, Socket.IO, HTML Canvas, and custom 2D physics simulation.
+
+Players can join as HOME, VISITOR, or SPECTATOR, then shoot stones with drag-to-shoot controls while the server simulates friction, collision, scoring, and game flow.
 
 INSTALL INSTRUCTIONS: npm install
 
