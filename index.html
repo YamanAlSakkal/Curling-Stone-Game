@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Online Curling - Draggable Shot</title>
+    <style>
+      body { margin: 0; padding: 0; background: #e0e0e0; font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: flex-start; padding-top: 20px; min-height: 100vh; }
+      #gameContainer { display: flex; width: 1000px; background: white; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.2); overflow: hidden; position: relative; padding-bottom: 60px;}
+      #mainArea { flex-grow: 1; position: relative; background-color: #f0f0f0; display: flex; justify-content: center; align-items: center; padding: 10px; }
+      #mainCanvas { border: 1px solid #666; background: #e0f7ff; display: block; }
+      .score-overlay { position: absolute; top: 15px; font-size: 48px; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
+      #liveHomeScoreOverlay { left: 30px; color: red; }
+      #liveVisitorScoreOverlay { right: 30px; color: #FFD700; /* yellow */ }
+      #sidebar { width: 200px; flex-shrink: 0; background: #f8f8f8; border-left: 2px solid #ccc; display: flex; flex-direction: column; padding: 10px; box-sizing: border-box; }
+      #zoomCanvas { width: 180px; height: 180px; border: 1px solid #999; background-color: #e0f7ff; margin-bottom: 10px; display: block; }
+      #statusIndicator { text-align: center; font-size: 16px; font-weight: bold; color: #333; margin-bottom: 10px; min-height: 20px; }
+      #stoneIndicators { display: flex; justify-content: space-around; margin-bottom: 10px; }
+      .stone-column { display: flex; flex-direction: column; align-items: center; }
+      .stone-indicator { width: 20px; height: 20px; border-radius: 50%; border: 1px solid #333; margin-bottom: 5px; box-shadow: inset 1px 1px 2px rgba(0,0,0,0.3); }
+      .home-stone { background-color: red; }
+      .visitor-stone { background-color: #FFD700; /* Yellow */ }
+      #shootingArea { margin-top: auto; height: 100px; border: 1px solid #999; position: relative; }
+      #shootingCanvas { display: block; width: 100%; height: 100%; cursor: default; }
+      .shooting-area-inactive { background-color: #e0e0e0; cursor: not-allowed; }
+      .shooting-area-home { background-color: #ffcdd2; cursor: grab; } /* light red */
+      .shooting-area-visitor { background-color: #fff9c4; cursor: grab; } /* light Yellow */
+      .shooting-area-dragging { cursor: grabbing !important; }
+      #buttons { position: absolute; bottom: 0; left: 0; width: 100%; background-color: #d0d0d0; padding: 10px 0; display: flex; justify-content: center; gap: 10px; border-top: 1px solid #aaa; }
+      #buttons button { padding: 8px 15px; font-size: 13px; border: none; border-radius: 4px; cursor: pointer; transition: background-color 0.2s ease; }
+      #buttons button:disabled { cursor: not-allowed; opacity: 0.6; }
+      #joinHome { background: #f44336; color: white; } #joinHome:hover:not(:disabled) { background: #e53935; }
+      #joinVisitor { background: #FFD700; color: #333; border: 1px solid #a0a000;} #joinVisitor:hover:not(:disabled) { background: #fbc02d; }
+      #joinSpectator { background: #9E9E9E; color: white; } #joinSpectator:hover:not(:disabled) { background: #757575; }
+      #restartButton { background-color: #ff9800; color: white; } #restartButton:hover:not(:disabled) { background-color: #fb8c00; }
+    </style>
+  </head>
+  <body>
+    <div id="gameContainer">
+      <div id="mainArea">
+        <canvas id="mainCanvas" width="600" height="600"></canvas>
+        <div id="liveHomeScoreOverlay" class="score-overlay">0</div>
+        <div id="liveVisitorScoreOverlay" class="score-overlay">0</div>
+      </div>
+      <div id="sidebar">
+        <canvas id="zoomCanvas" width="180" height="180"></canvas>
+        <div id="statusIndicator">Connecting...</div>
+        <div id="stoneIndicators">
+          <div id="homeStonesRemaining" class="stone-column"></div>
+          <div id="visitorStonesRemaining" class="stone-column"></div>
+        </div>
+        <div id="shootingArea">
+            <canvas id="shootingCanvas" width="180" height="98"></canvas>
+        </div>
+      </div>
+      <div id="buttons">
+        <button id="joinHome">Join as HOME</button>
+        <button id="joinVisitor">Join as VISITOR</button>
+        <button id="joinSpectator">Join as Spectator</button>
+        <button id="restartButton" style="display: none;">Restart Game</button>
+      </div>
+    </div> <script src="/socket.io/socket.io.js"></script>    
+    <script>
+      // Canvas Setup
+      const mainCanvas = document.getElementById("mainCanvas"); 
+      const mainCtx = mainCanvas.getContext("2d");             
+      const zoomCanvas = document.getElementById("zoomCanvas"); 
+      const zoomCtx = zoomCanvas.getContext("2d");             
+      const shootingCanvas = document.getElementById("shootingCanvas"); 
+      const shootingCtx = shootingCanvas.getContext("2d");         
+      const STONE_RADIUS = 15;                                   
+      const SHOOTING_STONE_RADIUS = 18;                          
+      const HOUSE_RADIUS = 100;                                  
+      const ZOOM_HOUSE_RADIUS = zoomCanvas.width * 0.4;          
+
+      //Game State & Interaction Vars
+      const socket = io();        
+      let gameState = null;       
+      let myRole = null;          
+      let isDragging = false;     
+      let dragStartX, dragStartY; 
+      let shootingStoneX, shootingStoneY; 
+
+      // Element References 
+      const shootingAreaDiv = document.getElementById("shootingArea"); 
+      const liveHomeScoreOverlay = document.getElementById("liveHomeScoreOverlay"); 
+      //other element  
+      const restartButton = document.getElementById("restartButton"); 
+      const joinHomeButton = document.getElementById("joinHome"); 
+      const joinVisitorButton = document.getElementById("joinVisitor"); 
+      const joinSpectatorButton = document.getElementById("joinSpectator"); 
+      const statusIndicator = document.getElementById("statusIndicator"); 
+      const homeStonesRemainingDiv = document.getElementById("homeStonesRemaining"); 
+      const visitorStonesRemainingDiv = document.getElementById("visitorStonesRemaining"); 
+
+
+      //Drawing Functions
+      function drawMainCanvas() {  mainCtx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+      mainCtx.fillStyle = "#e0f7ff"; mainCtx.fillRect(0, 0, mainCanvas.width, mainCanvas.height);
+      drawCurlingHouse(mainCtx, mainCanvas.width / 2, mainCanvas.height / 2, HOUSE_RADIUS);
+      if (gameState && gameState.stones) { gameState.stones.forEach(stone => { drawStone(mainCtx, stone.x, stone.y, STONE_RADIUS, stone.team, 1.0); }); } }
+      function drawZoomCanvas() {  zoomCtx.clearRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+         zoomCtx.fillStyle = "#e0f7ff"; zoomCtx.fillRect(0, 0, zoomCanvas.width, zoomCanvas.height);
+          drawCurlingHouse(zoomCtx, zoomCanvas.width / 2, zoomCanvas.height / 2, ZOOM_HOUSE_RADIUS);
+           if (gameState && gameState.stones) 
+           { const mcX=mainCanvas.width/2, mcY=mainCanvas.height/2, zcX=zoomCanvas.width/2, zcY=zoomCanvas.height/2, mvR=HOUSE_RADIUS*1.5, zS=zoomCanvas.width/(mvR*2);
+             gameState.stones.forEach(s => { const d=Math.hypot(s.x-mcX, s.y-mcY); if(d<mvR){ const rx=s.x-mcX, ry=s.y-mcY, zX=zcX+rx*zS, zY=zcY+ry*zS;
+               drawStone(zoomCtx, zX, zY, STONE_RADIUS*0.8, s.team, 0.8); } }); } }
+      function drawCurlingHouse(ctx, centerX, centerY, size) {  ctx.beginPath(); ctx.arc(centerX, centerY, size, 0, 2*Math.PI); ctx.fillStyle="#ADD8E6";
+       ctx.fill(); ctx.strokeStyle="#0000FF"; ctx.lineWidth=Math.max(1, size*0.02); ctx.stroke(); ctx.beginPath(); ctx.arc(centerX, centerY, size*0.6, 0, 2*Math.PI);
+        ctx.fillStyle="#FFFFFF"; ctx.fill(); ctx.strokeStyle="#000000"; ctx.lineWidth=Math.max(1, size*0.01); ctx.stroke(); ctx.beginPath();
+         ctx.arc(centerX, centerY, size*0.3, 0, 2*Math.PI); ctx.fillStyle="#FF0000"; ctx.fill(); ctx.strokeStyle="#800000";
+          ctx.lineWidth=Math.max(1, size*0.01); ctx.stroke(); ctx.beginPath(); ctx.arc(centerX, centerY, size*0.05, 0, 2*Math.PI);
+           ctx.fillStyle="#FFFFFF"; ctx.fill(); ctx.beginPath(); ctx.moveTo(centerX-size*1.1, centerY); ctx.lineTo(centerX+size*1.1, centerY);
+            ctx.moveTo(centerX, centerY-size*1.1); ctx.lineTo(centerX, centerY+size*1.1); ctx.strokeStyle="#555"; ctx.lineWidth=Math.max(1, size*0.01); ctx.stroke(); }
+      function drawStone(ctx, x, y, radius, team, opacity = 1.0) { ctx.save(); ctx.globalAlpha=opacity; ctx.beginPath();
+         ctx.arc(x, y, radius, 0, 2*Math.PI); ctx.fillStyle=team==="HOME"?"red":"#FFD700"; ctx.fill(); ctx.strokeStyle="#333";
+          ctx.lineWidth=1; ctx.stroke(); ctx.beginPath(); ctx.arc(x, y, radius*0.4, 0, 2*Math.PI); ctx.fillStyle=team==="HOME"?'rgba(255,255,0,0.7)':'rgba(50,50,50,0.7)';
+           ctx.fill(); ctx.restore(); }
+
+      //draw shooting/throwing stones Canvas Content
+      function drawShootingCanvas() {
+        shootingCtx.clearRect(0, 0, shootingCanvas.width, shootingCanvas.height);
+
+        if (canShoot()) {
+            // Define position for the draggable stone
+            shootingStoneX = shootingCanvas.width / 2;
+            //CHANGE START: Move stone Y position higher up
+            shootingStoneY = SHOOTING_STONE_RADIUS + 15; 
+
+            // virtual stone
+            drawStone(shootingCtx, shootingStoneX, shootingStoneY, SHOOTING_STONE_RADIUS, gameState.currentTurn);
+
+            //draw aiming line if dragging
+            if (isDragging) {
+                shootingCtx.beginPath();
+                shootingCtx.moveTo(shootingStoneX, shootingStoneY);
+                shootingCtx.lineTo(dragStartX, dragStartY);
+                shootingCtx.strokeStyle = "#333";
+                shootingCtx.lineWidth = 2;
+                shootingCtx.setLineDash([5, 5]);
+                shootingCtx.stroke();
+                shootingCtx.setLineDash([]);
+
+                //display power indicator text... addition by me just cuz I wanted to
+                const power = Math.hypot(shootingStoneX - dragStartX, shootingStoneY - dragStartY);
+                shootingCtx.fillStyle = "#000";
+                shootingCtx.font = "12px Arial";
+                shootingCtx.textAlign = "center";
+                shootingCtx.fillText(`Power: ${Math.round(power)}`, shootingCanvas.width / 2, shootingStoneY + SHOOTING_STONE_RADIUS + 15); // Position text below stone
+                shootingCtx.textAlign = "left";
+            }
+        } else { // If cannot shoot
+             if (gameState && !gameState.gameOver){ // Draw faded stone if game active but not shootable
+                 const stoneX = shootingCanvas.width / 2;
+                 const stoneY = SHOOTING_STONE_RADIUS + 15; // Position near top consistently
+                 shootingCtx.globalAlpha = 0.4;
+                 drawStone(shootingCtx, stoneX, stoneY, SHOOTING_STONE_RADIUS, gameState.currentTurn);
+                 shootingCtx.globalAlpha = 1.0;
+             }
+        }
+      }
+      //event lsiteners
+      joinHomeButton.addEventListener("click", () => { if (!myRole) socket.emit("registerRole", { role: "HOME" }); });
+      joinVisitorButton.addEventListener("click", () => { if (!myRole) socket.emit("registerRole", { role: "VISITOR" }); });
+      joinSpectatorButton.addEventListener("click", () => { if (!myRole) socket.emit("registerRole", { role: "SPECTATOR" }); });
+      restartButton.addEventListener("click", () => { if (gameState && gameState.gameOver) { socket.emit("requestRestart"); } });
+
+      // Shooting Canvas Interaction
+      shootingCanvas.addEventListener("mousedown", (e) => { if (!canShoot() || isDragging) return; const rect = shootingCanvas.getBoundingClientRect();
+         const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
+          const dist = Math.hypot(mouseX - shootingStoneX, mouseY - shootingStoneY);
+           if (dist <= SHOOTING_STONE_RADIUS * 1.5) { isDragging = true; dragStartX = mouseX; dragStartY = mouseY;
+             shootingAreaDiv.classList.add('shooting-area-dragging'); drawShootingCanvas(); } });
+      shootingCanvas.addEventListener("mousemove", (e) => { if (!isDragging) return; const rect = shootingCanvas.getBoundingClientRect();
+         dragStartX = e.clientX - rect.left; dragStartY = e.clientY - rect.top; drawShootingCanvas(); });
+      shootingCanvas.addEventListener("mouseup", (e) => { if (!isDragging) return; isDragging = false;
+         shootingAreaDiv.classList.remove('shooting-area-dragging'); const rect = shootingCanvas.getBoundingClientRect();
+          const endX = e.clientX - rect.left; const endY = e.clientY - rect.top; const dx = endX - shootingStoneX; const dy = endY - shootingStoneY;
+           let power = Math.hypot(dx, dy); const minPower = 5; if (power < minPower) { console.log("Shot cancelled - not enough power.");
+            drawShootingCanvas(); return; } const shootDX = -dx; const shootDY = -dy; const serverStartX = 300; const serverStartY = 550;
+             const powerScaleFactor = 1.5; const finalShootDX = shootDX * powerScaleFactor; const finalShootDY = shootDY * powerScaleFactor;
+              socket.emit("shoot", { startX: serverStartX, startY: serverStartY, endX: serverStartX + finalShootDX, endY: serverStartY + finalShootDY }); drawShootingCanvas(); });
+      shootingCanvas.addEventListener("mouseleave", (e) => { if (isDragging) { isDragging = false;
+         shootingAreaDiv.classList.remove('shooting-area-dragging'); console.log("Shot cancelled - mouse left shooting canvas."); drawShootingCanvas(); } });
+
+
+      //Game Logic Functions
+      function canShoot() { if (!gameState || !myRole || gameState.gameOver) return false;
+         if (gameState.stones.some(stone => stone.inMotion))
+          return false; const isMyTurn = (myRole === "HOME" && gameState.currentTurn === "HOME") || (myRole === "VISITOR" && gameState.currentTurn === "VISITOR"); return isMyTurn; }
+      function determineWinner() { if (!gameState || !gameState.gameOver) return "Game Over"; 
+      if (gameState.homeScore > gameState.visitorScore) { return `Game Over - Home Wins! (${gameState.homeScore} - ${gameState.visitorScore})`;
+
+       } else if (gameState.visitorScore > gameState.homeScore) { return `Game Over - Visitor Wins! (${gameState.visitorScore} - ${gameState.homeScore})`; }
+        else { return `Game Over - It's a Tie! (${gameState.homeScore} - ${gameState.visitorScore})`; } }
+
+      //Socket Event Handlers
+      socket.on("connect", () => { console.log("Connected:", socket.id); updateUI(); });
+      socket.on("gameState", (state) => { const wasGameOver = gameState?.gameOver ?? false; gameState = state; updateUI(); drawMainCanvas();
+         drawZoomCanvas(); drawShootingCanvas(); if (!state.gameOver && wasGameOver) { console.log("New game started!"); } });
+      socket.on("registrationSuccess", (data) => { myRole = data.role; console.log(`Registered as ${myRole}`); updateUI(); });
+      socket.on("registrationFailed", (data) => { console.warn(`Failed register as ${data.role}: ${data.reason}`);
+         alert(`Could not join as ${data.role}. Reason: ${data.reason}`); myRole = null; updateUI(); });
+      socket.on("disconnect", (reason) => { console.log("Disconnected:", reason); gameState = null; myRole = null; updateUI(); });
+
+      //UI Update Function
+      function updateUI() { if (!gameState) { liveHomeScoreOverlay.textContent = "-";
+       liveVisitorScoreOverlay.textContent = "-"; statusIndicator.textContent = socket.connected ? "Choose Role" : "Disconnected";
+        homeStonesRemainingDiv.innerHTML = ''; visitorStonesRemainingDiv.innerHTML = ''; restartButton.style.display = 'none';
+         shootingAreaDiv.className = 'shooting-area-inactive'; shootingCanvas.style.cursor = 'default'; joinHomeButton.disabled = false;
+          joinVisitorButton.disabled = false; joinSpectatorButton.disabled = false; return; } liveHomeScoreOverlay.textContent = gameState.liveHomeScore;
+           liveVisitorScoreOverlay.textContent = gameState.liveVisitorScore; let statusText; if (gameState.gameOver) { statusText = determineWinner();
+
+            } else if (gameState.stones.some(s => s.inMotion)) { statusText = "Moving..."; 
+
+            } else { const stonesLeft = gameState.currentTurn === "HOME" ? gameState.homeStonesLeft : gameState.visitorStonesLeft; statusText = `Turn: ${gameState.currentTurn}`;
+             if ((myRole === "HOME" && gameState.currentTurn === "HOME") || (myRole === "VISITOR" && gameState.currentTurn === "VISITOR")) { statusText += " - Your Turn!"; }
+              else if (myRole) { statusText += ` - Waiting`; } } statusIndicator.textContent = statusText; homeStonesRemainingDiv.innerHTML = ''; 
+              for (let i = 0; i < gameState.homeStonesLeft; i++) { const stoneDiv = document.createElement('div'); stoneDiv.className = 'stone-indicator home-stone';
+               homeStonesRemainingDiv.appendChild(stoneDiv); } visitorStonesRemainingDiv.innerHTML = ''; 
+               for (let i = 0; i < gameState.visitorStonesLeft; i++) { const stoneDiv = document.createElement('div'); stoneDiv.className = 'stone-indicator visitor-stone';
+                visitorStonesRemainingDiv.appendChild(stoneDiv); } restartButton.style.display = gameState.gameOver ? 'inline-block' : 'none';
+                 if (myRole) { joinHomeButton.disabled = true; joinVisitorButton.disabled = true; joinSpectatorButton.disabled = true; 
+
+                 } else { joinHomeButton.disabled = !!gameState.homePlayer; joinVisitorButton.disabled = !!gameState.visitorPlayer;
+                   joinSpectatorButton.disabled = false; } shootingAreaDiv.classList.remove('shooting-area-inactive', 'shooting-area-home', 'shooting-area-visitor', 'shooting-area-dragging');
+                    if (canShoot()) { if (gameState.currentTurn === 'HOME') { shootingAreaDiv.classList.add('shooting-area-home'); 
+
+                    } else { shootingAreaDiv.classList.add('shooting-area-visitor'); } shootingCanvas.style.cursor = 'grab'; 
+                  } else { shootingAreaDiv.classList.add('shooting-area-inactive'); shootingCanvas.style.cursor = 'default'; } drawShootingCanvas(); }
+
+      updateUI(); drawMainCanvas(); drawZoomCanvas(); // Initial draws
+
+    </script>
+  </body>
+</html>
